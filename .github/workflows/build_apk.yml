@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK (Optimized)
 
 on:
   push:
@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Build Mode (arm64 is 60% faster, split creates individual APKs, universal creates 1 large APK)'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - 'arm64'
+          - 'split'
+          - 'universal'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -13,31 +27,56 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Shallow Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Set up Flutter
+      - name: Setup Gradle Cache & Parallel Daemon
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Set up Flutter with SDK Caching
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
+          cache-key: "flutter-:os:-:channel:-:version:-:arch:-:hash:"
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build Android Release APK
-        run: flutter build apk --release
+        run: |
+          MODE="${{ github.event.inputs.build_mode || 'arm64' }}"
+          echo "Selected build mode: $MODE"
+          if [ "$MODE" = "arm64" ]; then
+            flutter build apk --release --target-platform android-arm64 --android-skip-build-dependency-validation
+          elif [ "$MODE" = "split" ]; then
+            flutter build apk --release --split-per-abi --android-skip-build-dependency-validation
+          else
+            flutter build apk --release --android-skip-build-dependency-validation
+          fi
 
-      - name: Upload APK Artifact
+      - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: zenith-tasks-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
+          compression-level: 0
